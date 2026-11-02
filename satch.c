@@ -23,6 +23,16 @@
 // itself) then just define 'NDEBUG' by for instance using '-DNDEBUG' as
 // compiler option to compile this file and then link to it.
 
+// The library uses POSIX system calls (such as 'clock_gettime' to measure
+// the CPU time of the calling thread or 'getrusage' for resource usage
+// statistics) and thus needs these declarations visible even under a
+// pedantic '-std=c99' build.  Feature test macros have to be defined
+// before any system header file is included.
+
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 // We do not support assertion checking without internal proof checking (and
 // witness checking).  These additional checks increase memory usage by a
 // factor of two to four and solving times by up to a factor of five (due to
@@ -54,6 +64,7 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 /*------------------------------------------------------------------------*/
@@ -1303,7 +1314,10 @@ out_of_memory (size_t bytes)
 
 #ifndef NMESSAGE
 
-// Print a verbose message with the given verbose level.
+// Print a verbose message with the given verbose level.  The message is
+// assembled in a local buffer first and then written with a single call in
+// order to keep it atomic with respect to concurrent messages of solver
+// instances running in other threads.
 
 static void
 message (struct satch *solver,
@@ -1312,19 +1326,39 @@ message (struct satch *solver,
 {
   if (solver->options.verbose < level)
     return;
-  fputs ("c ", stdout);
-  printf ("[%s-%" PRIu64 "] ", name, count);
-  va_list ap;
-  va_start (ap, fmt);
-  vprintf (fmt, ap);
-  va_end (ap);
-  fputc ('\n', stdout);
+
+  char buffer[1024];
+  buffer[0] = 0;
+  const int used =
+    snprintf (buffer, sizeof buffer, "c [%s-%" PRIu64 "] ", name, count);
+  size_t len = used > 0 ? (size_t) used : 0;
+  if (len > sizeof buffer - 2)
+    len = sizeof buffer - 2;
+
+  {
+    va_list ap;
+    va_start (ap, fmt);
+    const int rest = vsnprintf (buffer + len, sizeof buffer - len, fmt, ap);
+    va_end (ap);
+    if (rest > 0)
+      {
+        len += (size_t) rest;
+        if (len > sizeof buffer - 2)
+          len = sizeof buffer - 2;
+      }
+  }
+
+  buffer[len] = '\n';
+  buffer[len + 1] = 0;
+  fputs (buffer, stdout);
   fflush (stdout);
 }
 
 #endif
 
 // Print nicely formatted 'c ---- [ <name> ] ----- ... ' section start line.
+// As with 'message' the line is assembled in a buffer first and printed
+// with a single call to keep it atomic with respect to other threads.
 
 static void
 internal_section (struct satch *solver, const char *name)
@@ -1334,18 +1368,32 @@ internal_section (struct satch *solver, const char *name)
     fputs ("c\n", stdout);
   INC (sections);
   COLORS (1);
-  fputs ("c ", stdout);
-  COLOR (BLUE);
-  fputs ("---- [ ", stdout);
-  COLOR (BOLD);
-  fputs (name, stdout);
-  COLOR (NORMAL);
-  COLOR (BLUE);
-  fputs (" ] ", stdout);
-  for (size_t i = strlen (name); i < 66; i++)
-    putc ('-', stdout);
-  COLOR (NORMAL);
-  fputs ("\nc\n", stdout);
+
+  char buffer[128];
+  size_t len = 0;
+  buffer[len] = 0;
+
+#define SECTION(FMT, ...) \
+  do { \
+    const int _u = snprintf (buffer + len, sizeof buffer - len, \
+                             FMT, ## __VA_ARGS__); \
+    if (_u > 0) \
+      { \
+        len += (size_t) _u; \
+        if (len > sizeof buffer - 1) \
+          len = sizeof buffer - 1; \
+      } \
+  } while (0)
+
+  SECTION ("c ---- [ %s%s%s%s ] ", BLUE, BOLD, name, NORMAL);
+  SECTION ("%s", BLUE);
+  for (size_t i = strlen (name); i < 66 && len + 1 < sizeof buffer; i++)
+    buffer[len++] = '-', buffer[len] = 0;
+  SECTION ("%s\nc\n", NORMAL);
+
+#undef SECTION
+
+  fputs (buffer, stdout);
   fflush (stdout);
 }
 
@@ -1592,18 +1640,18 @@ do { \
 // porting effort if building on other operating systems.  On the other hand
 // it is only used for diagnostic purposes and in principle can be removed.
 
-// Process time since starting the process.
+// CPU time spent by the calling thread since starting the process.  Using
+// 'CLOCK_THREAD_CPUTIME_ID' (instead of 'getrusage (RUSAGE_SELF)') makes
+// the reported time independent of other threads, which is essential when
+// multiple solver instances run concurrently in the same process.
 
 static double
 process_time (void)
 {
-  struct rusage u;
-  double res;
-  if (getrusage (RUSAGE_SELF, &u))
+  struct timespec ts;
+  if (clock_gettime (CLOCK_THREAD_CPUTIME_ID, &ts))
     return 0;
-  res = u.ru_utime.tv_sec + 1e-6 * u.ru_utime.tv_usec;
-  res += u.ru_stime.tv_sec + 1e-6 * u.ru_stime.tv_usec;
-  return res;
+  return ts.tv_sec + 1e-9 * ts.tv_nsec;
 }
 
 // The maximum amount of memory used by this process as seen by the system.
@@ -5001,7 +5049,7 @@ update_phases_and_backtrack_to_root_level (struct satch *solver)
 // to the exponential moving average.  The alphas are defined above as
 // macros since some compilers will otherwise not allow the following line.
 
-const double slow_beta = 1.0 - slow_alpha;
+static const double slow_beta = 1.0 - slow_alpha;
 
 // We have two sets of independent averages for stable and focused mode.
 // During mode switching the 'stable' bit is flipped which makes the other
@@ -5032,7 +5080,7 @@ unbiased_slow_average (struct averages *a, double avg)
 
 // Only 'restarting' needs a fast moving average ('fast_glue').
 
-const double fast_beta = 1.0 - fast_alpha;
+static const double fast_beta = 1.0 - fast_alpha;
 
 static void
 update_fast_average (double *average, unsigned value)
@@ -6690,6 +6738,30 @@ REPORT(remaining, "%.0f%%")
 
 // *INDENT-ON*
 
+// The following two macros help assembling a complete line in a buffer
+// before printing it with a single call, which keeps the line atomic with
+// respect to concurrent output of solver instances in other threads.
+
+#define REPORT_PUSH(CHR) \
+do { \
+  assert (out_end + 1 < (int) sizeof (out)); \
+  out[out_end++] = (CHR); \
+} while (0)
+
+#define REPORT_PUSH_STR(STR) \
+do { \
+  for (const char * _p = (STR); *_p; _p++) \
+    REPORT_PUSH (*_p); \
+} while (0)
+
+// Under 'NCOLOR' there are no color codes at all.
+
+#ifdef NCOLOR
+#define REPORT_CODE(NAME) ""
+#else
+#define REPORT_CODE(NAME) (colors ? NAME ## _CODE : "")
+#endif
+
 static void
 report (struct satch *solver, unsigned verbose, int type)
 {
@@ -6827,14 +6899,18 @@ report (struct satch *solver, unsigned verbose, int type)
 
       // Print the header lines.
 
+      char out[MAX_LINE + 64];
       for (int i = 0; i < MAX_HEADER; i++)
 	{
-	  fputc ('c', stdout);
-	  COLOR (YELLOW);
+	  int out_end = 0;
+	  REPORT_PUSH ('c');
+	  REPORT_PUSH_STR (REPORT_CODE (YELLOW));
 	  for (int j = 1; j < end_header[i]; j++)
-	    fputc (header[i][j], stdout);
-	  COLOR (NORMAL);
-	  fputc ('\n', stdout);
+	    REPORT_PUSH (header[i][j]);
+	  REPORT_PUSH_STR (REPORT_CODE (NORMAL));
+	  REPORT_PUSH ('\n');
+	  out[out_end] = 0;
+	  fputs (out, stdout);
 	}
 
       fputs ("c\n", stdout);
@@ -6842,7 +6918,9 @@ report (struct satch *solver, unsigned verbose, int type)
 
   // Print the values line.
 
-  fputs ("c ", stdout);
+  char out[MAX_LINE + 64];
+  int out_end = 0;
+  REPORT_PUSH_STR ("c ");
 
 #ifndef NCOLOR
   bool reset = false;
@@ -6856,51 +6934,56 @@ report (struct satch *solver, unsigned verbose, int type)
 	case '1':
 	case '?':
 	case 'i':
-	  fputs (BOLD_CODE, stdout);
+	  REPORT_PUSH_STR (BOLD_CODE);
 	  reset = true;
 	  break;
 	case 's':
-	  fputs (GREEN_CODE, stdout);
+	  REPORT_PUSH_STR (GREEN_CODE);
 	  reset = true;
 	  break;
 	case 'e':
-	  fputs (BOLD_GREEN_CODE, stdout);
+	  REPORT_PUSH_STR (BOLD_GREEN_CODE);
 	  reset = true;
 	  break;
 	case '[':
 	case ']':
-	  fputs (MAGENTA_CODE, stdout);
+	  REPORT_PUSH_STR (MAGENTA_CODE);
 	  magenta = true;
 	  break;
 	}
 
       assert (line[2] == type);
-      fputc (line[2], stdout);
+      REPORT_PUSH (line[2]);
 
       if (reset)
-	fputs (NORMAL_CODE, stdout);
+	REPORT_PUSH_STR (NORMAL_CODE);
 
       if (magenta)
 	reset = true;
       else if (solver->stable)
 	{
-	  fputs (MAGENTA_CODE, stdout);
+	  REPORT_PUSH_STR (MAGENTA_CODE);
 	  reset = true;
 	}
     }
   else
 #endif
-    fputc (line[2], stdout);
+    REPORT_PUSH (line[2]);
 
   for (int i = 3; i < end_line; i++)
-    fputc (line[i], stdout);
+    REPORT_PUSH (line[i]);
 #ifndef NCOLOR
   if (reset)
-    fputs (NORMAL_CODE, stdout);
+    REPORT_PUSH_STR (NORMAL_CODE);
 #endif
-  fputc ('\n', stdout);
+  REPORT_PUSH ('\n');
+  out[out_end] = 0;
+  fputs (out, stdout);
 
   fflush (stdout);
+#undef REPORT_PUSH
+#undef REPORT_PUSH_STR
+#undef REPORT_CODE
 }
 
 /*------------------------------------------------------------------------*/

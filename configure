@@ -17,6 +17,8 @@ where '<option>' is one of the following:
                        
 --no-check              disable checking code (for '-g')
 --no-logging            disable logging code (for '-g')
+
+--tsan                  thread sanitizer ('-fsanitize=thread -pthread')
                  
 -f... | -static         passed to compiler (like '-fsanitize=address')
 
@@ -95,6 +97,8 @@ do
         die "can not combine '--logging' and '--no-logging'"
       logging=no
       ;;
+
+    --tsan) options="$options -fsanitize=thread -pthread";;
 
     -f*|-static) options="$options $1";;
 

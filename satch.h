@@ -18,6 +18,33 @@
 // clauses after returning from 'satch_solve'.  Furthermore 'satch_assume',
 // 'satch_set_terminate', and 'satch_set_learn' are missing too.
 
+/*------------------------------------------------------------------------*/
+
+// THREAD SAFETY.
+
+// The library is reentrant: a solver instance is completely independent of
+// other instances, i.e., all mutable state is per 'struct satch' pointer,
+// and any number of threads can each run their own solver instance
+// concurrently.  However, an individual solver instance is not thread-safe:
+// it must be used by at most one thread at a time (and it is fine to
+// migrate ownership of an instance between threads sequentially).
+
+// Caveats for concurrent usage:
+
+// - Verbose messages and section headers are printed to '<stdout>' as a
+//   single write per line and are thus not interleaved, but lines of
+//   different threads may still be mixed arbitrarily.  Statistics and
+//   logging messages are not protected in this way.
+
+// - The 'satch_process_time' function and internal profiling return the
+//   CPU time of the calling thread only, not of the whole process.
+
+// - Fatal internal errors (assertions in a debugging build, out-of-memory,
+//   or 'COVER' goals) abort the entire process, including other threads.
+//   They indicate bugs in the library and are not meant to be caught.
+
+/*------------------------------------------------------------------------*/
+
 struct satch;			// One solver instance.
 
 // SAT competition format conforming exit codes used for 'satch_solve'.
@@ -106,7 +133,7 @@ void satch_trace_proof (struct satch *, FILE *);
 
 int satch_maximum_variable (struct satch *);
 
-// Get process time used by the current process.
+// Get CPU time used by the calling thread since the process started.
 
 double satch_process_time (void);
 

@@ -248,4 +248,16 @@ echo $compile
 $compile || die "compilation failed"
 run 0 ./testapi
 
+msg "compiling 'testthreadapi.c' and linking against library"
+
+compile="$compiler -pthread -c testthreadapi.c"
+echo $compile
+$compile || die "compilation failed"
+
+compile="$compiler -pthread -o testthreadapi testthreadapi.o -L. -lsatch -lm"
+echo $compile
+$compile || die "linking failed"
+
+run 0 ./testthreadapi
+
 msg "all tests ${BOLD}succeeded${NORMAL}."

@@ -42,7 +42,7 @@ test-two-ways: gencombi
 	./gencombi | ./checkconfig.sh
 
 clean:
-	rm -f libsatch.* satch gencombi testapi *.o makefile config.c
+	rm -f libsatch.* satch gencombi testapi testthreadapi *.o makefile config.c
 	rm -f *~ *.gcda *.gcno *.gcov gmon.out cnfs/*.proof implied.pdf
 
 .PHONY: all clean indent test test-all-options test-all-pairs test-all-triples test-two-ways

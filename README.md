@@ -106,10 +106,32 @@ For testing and debugging the following are used:
 - [`catch.h`](catch.h)      header file of internal proof checker for testing and debugging
 - [`catch.c`](catch.c)      implementation of internal proof checker for testing and debugging
 - [`testapi.c`](testapi.c)  simple separate (preliminary) API test suite
+- [`testthreadapi.c`](testthreadapi.c)
+                            reentrancy test suite (concurrent solver
+                            instances in multiple threads)
 - [`tatch.sh`](tatch.sh)    test suite for CNFs in [`cnfs`](cnfs) and
-                            [`xnfs`](xnfs) and for building and running [`testapi`](testapi)
+                            [`xnfs`](xnfs) and for building and running
+                            [`testapi`](testapi) and
+                            [`testthreadapi`](testthreadapi)
 - [`testapi`](testapi)      binary built from [`testapi.c`](testapi.c) by
                             [`tatch.sh`](tatch.sh)
+
+Thread Safety
+=============
+
+The library is reentrant, i.e., any number of solver instances created
+through [`satch_init`](satch.h) can be used concurrently as long as each
+instance is owned by a single thread.  Individual solver instances are not
+thread-safe and have to be used by one thread at a time.  See the comments
+in [`satch.h`](satch.h) for details and caveats.
+
+To check for data races the [`configure`](configure) script has a `--tsan`
+option, which builds with the thread sanitizer ('-fsanitize=thread'):
+
+    ./configure --tsan && make test
+
+The threaded API test [`testthreadapi.c`](testthreadapi.c) is run by
+[`tatch.sh`](tatch.sh) in any case and thus also under such a build.
 
 Furthermore, as we are having many different combinations of configurations,
 testing them is highly non-trivial and is achieved with the following:
